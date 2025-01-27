@@ -1,0 +1,128 @@
+version: '3'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: kafka
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_CONNECTIONS_MAX_IDLE_MS: -1
+      KAFKA_COMPRESSION_TYPE: producer
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+
+  connect:
+    image: confluentinc/cp-kafka-connect:latest
+    container_name: kafka_connect
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_GROUP_ID: connect-cluster
+      CONNECT_CONFIG_STORAGE_TOPIC: connect-configs         # Required topic
+      CONNECT_OFFSET_STORAGE_TOPIC: connect-offsets         # Required topic
+      CONNECT_STATUS_STORAGE_TOPIC: connect-statuses        # Required topic
+      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_REST_ADVERTISED_HOST_NAME: localhost
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1          # For single-broker setups
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1          # For single-broker setups
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1          # For single-broker setups
+    depends_on:
+      - kafka
+      - schema-registry
+    ports:
+      - "8083:8083"
+    command:
+      - bash
+      - -c
+      - |
+        echo "Installing Connector"
+        confluent-hub install --no-prompt debezium/debezium-connector-postgresql:latest
+        #
+        echo "Launching Kafka Connect worker"
+        /etc/confluent/docker/run &
+        #
+        sleep infinity
+
+  flink-jobmanager:
+    image: confluentinc/cp-flink:1.20.0-cp1-java17
+    ports:
+      - 8081:8081
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+
+    command: jobmanager
+    volumes:
+      - /home/ubuntu/epsio/pigivm/benchmarks/flink-epsio-ingestion/flink/jobs:/data  # Mount the jobs directory into the container
+      - ./connectors/flink-avro-confluent-registry-1.20.0.jar:/opt/flink/lib/flink-avro-confluent-registry-1.20.0.jar
+      - ./connectors/flink-connector-kafka-3.4.0-1.20.jar:/opt/flink/lib/flink-connector-kafka-3.4.0-1.20.jar
+      - ./connectors/flink-connector-jdbc-3.2.0-1.19.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.19.jar
+      - ./connectors/flink-avro-1.20.0.jar:/opt/flink/lib/flink-avro-1.20.0.jar
+    #      - ./connectors/flink-avro-confluent-registry-1.19.0.jar:/opt/flink/lib/flink-avro-confluent-registry-1.19.0.jar
+      - ./connectors/avro-1.11.1.jar:/opt/flink/lib/avro-1.11.1.jar
+#      - ./connectors/flink-avro-1.19.0.jar:/opt/flink/lib/flink-avro-1.19.0.jar
+      - ./connectors/jackson-databind-2.15.2.jar:/opt/flink/lib/jackson-databind-2.15.2.jar
+      - ./connectors/jackson-core-2.15.2.jar:/opt/flink/lib/jackson-core-2.15.2.jar
+      - ./connectors/jackson-annotations-2.15.2.jar:/opt/flink/lib/jackson-annotations-2.15.2.jar
+      - ./connectors/kafka-schema-registry-client-7.3.0.jar:/opt/flink/lib/kafka-schema-registry-client-7.3.0.jar
+      - ./connectors/kafka-clients-3.3.2.jar:/opt/flink/lib/kafka-clients-3.3.2.jar
+      - ./connectors/guava-30.1-jre.jar:/opt/flink/lib/guava-30.1-jre.jar
+      - ./connectors/flink-sql-avro-1.20.0.jar:/opt/flink/lib/flink-sql-avro-1.20.0.jar
+      - ./connectors/postgresql-42.5.0.jar:/opt/flink/lib/postgresql-42.5.0.jar
+      - ./state:/state
+      - ./conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+    depends_on:
+      - kafka
+
+  flink-taskmanager:
+    image: confluentinc/cp-flink:1.20.0-cp1-java17
+    depends_on:
+      - flink-jobmanager
+    command: taskmanager
+    volumes:
+      - ./connectors/flink-avro-confluent-registry-1.20.0.jar:/opt/flink/lib/flink-avro-confluent-registry-1.20.0.jar
+      - ./connectors/flink-connector-kafka-3.4.0-1.20.jar:/opt/flink/lib/flink-connector-kafka-3.4.0-1.20.jar
+      - ./connectors/flink-connector-jdbc-3.2.0-1.19.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.19.jar
+      - ./connectors/flink-avro-1.20.0.jar:/opt/flink/lib/flink-avro-1.20.0.jar
+      - ./connectors/flink-sql-avro-1.20.0.jar:/opt/flink/lib/flink-sql-avro-1.20.0.jar
+      - ./connectors/avro-1.11.1.jar:/opt/flink/lib/avro-1.11.1.jar
+      - ./connectors/jackson-databind-2.15.2.jar:/opt/flink/lib/jackson-databind-2.15.2.jar
+      - ./connectors/jackson-core-2.15.2.jar:/opt/flink/lib/jackson-core-2.15.2.jar
+      - ./connectors/jackson-annotations-2.15.2.jar:/opt/flink/lib/jackson-annotations-2.15.2.jar
+      - ./connectors/kafka-schema-registry-client-7.3.0.jar:/opt/flink/lib/kafka-schema-registry-client-7.3.0.jar
+      - ./connectors/kafka-clients-3.3.2.jar:/opt/flink/lib/kafka-clients-3.3.2.jar
+      - ./connectors/guava-30.1-jre.jar:/opt/flink/lib/guava-30.1-jre.jar
+      - ./connectors/postgresql-42.5.0.jar:/opt/flink/lib/postgresql-42.5.0.jar
+      - ./state:/state
+      - ./conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:latest
+    container_name: schema-registry
+    environment:
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "PLAINTEXT://kafka:9092"
+      SCHEMA_REGISTRY_HOST_NAME: "schema-registry"
+    ports:
+      - "8082:8081"
+    depends_on:
+      - kafka
